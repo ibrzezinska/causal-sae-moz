@@ -1,9 +1,7 @@
 # Prepare population data for causal SAE
-# First, assign treatment at EA level (5km buffer)
-# You will need rasters with flood extent for Ana, Dumako, Gombe
-# Then calculate zonal statistics from WorldPop for the geocovariates 
-# And calculate the population for each EA 
-# Also the flow accumulation measure for the propensity score
+# Zonal statistics at EA level for all census EAs (full population)
+# Drop flow accumulation
+
 
 # Libraries
 library(sf)
@@ -12,113 +10,98 @@ library(exactextractr)
 library(dplyr)
 library(tidyverse)
 
-
-# Function to standardise rasters using z-scores 
-
-std_rast <- function(r) {
-  
-  # Get mean and sd of the raster
-  mean_val <- as.numeric(global(r, fun = "mean", na.rm = TRUE))
-  sd_val <- as.numeric(global(r, fun = "sd", na.rm = TRUE))
-  
-  # Store values of a raster
-  vals <- values(r)
-  
-  # Standardise raster values
-  values(r) <- (vals - mean_val) / sd_val
-  
-  return(r)
-}
-
-
 # Load population-level EA shapefile (for analysis districts)
-pop_ea <- st_read("./output/population_eas.shp")
-sample_data <- readRDS("./output/data_eligible.rds")
+#pop_ea <- st_read("./output/population_eas.shp")
+#sample_data <- readRDS("./output/data_eligible.rds")
 flood_ana <- rast("./data/flood_ana.tif")
 flood_dumako <- rast("./data/flood_dumako.tif")
 flood_gombe <- rast("./data/flood_gombe.tif")
-#flow_acc <- rast("./data/flow_accumulation.tif")
 cov_dir <- "./data/Geodata_processed" 
+aes_census_2017 <- st_read("Z:/01 Mozambique/02 Code/moz-hh-impact-study/Data/Output/aes_2017/aes_2017.shp")
+
 
 # List all WorldPop covariates
 tif_files <- list.files(
   cov_dir,
   pattern = "\\.tif$",
-  full.names = TRUE
+  full.names = TRUE,
+  recursive = F
 )
 
 # Stack all geodata
 cov_stack <- rast(tif_files)
-cov_stack
+names(cov_stack) <- tools::file_path_sans_ext(basename(tif_files))
+
+name_lookup <- c(
+  "Matlas_Global_Motorized_Travel_Time_to_Healthcare_2019" = "travel_time_health_2019",
+  "moz_buildings_count_BCB_gl_100m_v1_1" = "build_count_bcb_2022",
+  "moz_built_S_GHS_U_wFGW_100m_v1_2022" = "built_area_ghs_2022",
+  "moz_esalc_11_dst_2022_100m_v1" = "dist_cult_area_2022",
+  "moz_esalc_130_dst_2022_100m_v1" = "dist_shrub_2022",
+  "moz_esalc_140_dst_2022_100m_v1" = "dist_herbaceous_2022",
+  "moz_esalc_150_dst_2022_100m_v1" = "dist_sparse_veg_2022",
+  "moz_esalc_160_dst_2022_100m_v1" = "dist_aqua_veg_2022",
+  "moz_esalc_190_dst_2022_100m_v1" = "dist_art_surface_2022",
+  "moz_esalc_200_dst_2022_100m_v1" = "dist_bare_area_2022",
+  "moz_esalc_210_dst_2022_100m_v1" = "dist_wetlands",
+  "moz_esalc_40_dst_2022_100m_v1" = "dist_water_snow_ice_2022",
+  "moz_highway_dist_osm_2023_100m_v1" = "dist_highway_2022",
+  "moz_pop_2022_CN_100m_R2025A_v1" = "population_2022",
+  "moz_ppt_2022_yravg_tc_100m_v1" = "precip_2022",
+  "moz_tavg_2022_tlst_100m_v1" = "tavg_2022",
+  "moz_viirs_nvf_2022_100m_v1" = "nightlights_2022",
+  "urban_rural_catchment_areas" = "urban_rural_fao"
+)
+
+names(cov_stack) <- unname(name_lookup[names(cov_stack)])
+
 names(cov_stack)
 
 # Check CRS
 crs(cov_stack)
-st_crs(pop_ea)
-
-# Treat population layer separately - it needs the sum function 
-cov_stack_nopop <- cov_stack[[names(cov_stack) != "moz_pop_2022_CN_100m_R2025A_v1"]]
-pop_layer <- cov_stack[[names(cov_stack) == "moz_pop_2022_CN_100m_R2025A_v1"]]
-
-# Standardise all covariates WorldPop
-#r_std_list <- lapply(1:nlyr(cov_stack_nopop), function(i) std_rast(cov_stack_nopop[[i]]))
-
-# Combine back to a SpatRaster
-#cov_stack_std <- rast(cov_stack_nopop)
+st_crs(aes_census_2017)
 
 # Zonal statistics - mean values of WorldPop covariates
+# Define statistic for each layer
+# Population layer
+pop_layer <- cov_stack[["population_2022"]]
+
+# All other layers
+cov_stack_nopop <- cov_stack[[names(cov_stack) != "population_2022"]]
+
+# Mean for all non-population covariates
 zonal_means <- exact_extract(
   cov_stack_nopop,
-  pop_ea,
+  aes_census_2017,
   "mean",
   progress = TRUE
 )
 
-# Add AES identifier
-zonal_means <- bind_cols(
-  pop_ea %>% st_drop_geometry() %>% select(AES),
-  zonal_means
-)
-
-# Sum for population (WorldPop)
-zonal_sum <- exact_extract(
+# Sum for population
+zonal_pop <- exact_extract(
   pop_layer,
-  pop_ea,
+  aes_census_2017,
   "sum",
-  progress = T
+  progress = TRUE
 )
 
-# Add AES identifier 
-zonal_sum <- bind_cols(
-  pop_ea %>% st_drop_geometry() %>% select(AES),
-  zonal_sum
-) 
+# Combine
+zonal_stats <- bind_cols(
+  aes_census_2017 %>%
+    st_drop_geometry() %>%
+    dplyr::select(AES),
+  zonal_means,
+  population_2022 = zonal_pop[[1]]
+)
 
-# Rename second column
-names(zonal_sum)[2] <- "population"
-
-# # Mean for flow accumulation
-# zonal_fa <- exact_extract(
-#   flow_acc_std,
-#   pop_ea,
-#   "mean",
-#   progress = T
-# )
-# 
-# # Add AES identifier 
-# zonal_fa <- bind_cols(
-#   pop_ea %>% st_drop_geometry() %>% select(AES),
-#   zonal_fa
-# ) 
-# 
-# # Change name to be consistent with sample data
-# names(zonal_fa)[2] <- "flow_acc"
+# Name according to EA level
+names(zonal_stats)[-1] <- paste0(names(zonal_stats)[-1], "_aes")
 
 # Create a 5km buffer around EAs 
-pop_ea_5km <- pop_ea %>%
+pop_ea_5km <- aes_census_2017 %>%
   st_transform(32736) %>%  # reproject to meters before calculating buffers
   st_buffer(5000) %>%
-  st_transform(st_crs(pop_ea))
+  st_transform(st_crs(aes_census_2017))
 
 # List flood rasters
 flood_rasters <- list(

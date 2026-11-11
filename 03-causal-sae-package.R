@@ -42,7 +42,7 @@ iof_2022_raw <-  read_dta("Z:/01 Mozambique/01 Data/01 Poverty/04 Household data
 
 # Leave only hhid and sample weights - aggregate at hh level 
 hh_weights <- iof_2022_raw %>%
-  select(hhid, weight_hh) %>%
+  dplyr::select(hhid, weight_hh) %>%
   group_by(hhid) %>%
   summarise(
     weight_hh = max(weight_hh, na.rm = TRUE),
@@ -60,44 +60,44 @@ sample_data <- sample_data %>%
   relocate(weight_hh, .before = hhid)
 
 # Aggregate
-ea_sample_data <- sample_data %>%
-  st_drop_geometry() %>%
-  group_by(AES, BA_ID, ID_DIST, PA_ID, urban, province_name, Cod_provincia) %>%
-  summarise(
-    log_cons = mean(log_cons, na.rm = TRUE),
-    weight_hh = mean(weight_hh, na.rm = T),
-    
-    # treatment
-    flood_any_5km_no_eloise = first(flood_any_5km_no_eloise),
-    
-    # population
-    population = first(population),
-    
-    # flow accumulation
-    #flow_acc = first(flow_acc),
-    
-    # all geocovariates
-    across(
-      starts_with("mean."),
-      ~ mean(.x, na.rm = TRUE)
-    ),
-    
-    n_hh = n(),
-    .groups = "drop"
-  )
+# ea_sample_data <- sample_data %>%
+#   st_drop_geometry() %>%
+#   group_by(AES, BA_ID, ID_DIST, PA_ID, urban, province_name, Cod_provincia) %>%
+#   summarise(
+#     log_cons = mean(log_cons, na.rm = TRUE),
+#     weight_hh = mean(weight_hh, na.rm = T),
+#     
+#     # treatment
+#     flood_any_5km_no_eloise = first(flood_any_5km_no_eloise),
+#     
+#     # population
+#     population = first(population),
+#     
+#     # flow accumulation
+#     #flow_acc = first(flow_acc),
+#     
+#     # all geocovariates
+#     across(
+#       starts_with("mean."),
+#       ~ mean(.x, na.rm = TRUE)
+#     ),
+#     
+#     n_hh = n(),
+#     .groups = "drop"
+#   )
 
 
 # Fit logistic model for propensity score
 # Average household size from census at district level (divide population)
 
 # Create non-sampled data object
-sample_eas <- unique(ea_sample_data$AES)
+sample_eas <- unique(sample_data$AES)
 
 non_sampled_data <- population_data %>%
   filter(!AES %in% sample_eas)
 
 ### COVARIATE SELECTION ###
-lasso_df <- ea_sample_data %>%
+lasso_df <- sample_data %>%
   dplyr::select(log_cons, starts_with("mean"))
 
 set.seed(123)
@@ -284,7 +284,7 @@ non_sampled_data_est <- population_data %>%
   rename(group = ID_DIST,
          A = flood_any_5km_no_eloise)
 
-sample_data_est <- ea_sample_data %>%
+sample_data_est <- sample_data %>%
   st_drop_geometry() %>%
   as.data.frame() %>%
   dplyr::select(all_of(lasso_predictors), ID_DIST, flood_any_5km_no_eloise, log_cons) %>%
@@ -503,10 +503,11 @@ csae_estimators <- function(data_sample, data_out_of_sample,
   pop$e1_N <- predict(fit_e, newdata = pop, type = "response")
   pop$e0_N <- 1 - pop$e1_N
   
-  # Optional numerical protection
-  eps <- 1e-6
-  pop$e1_N <- pmin(pmax(pop$e1_N, eps), 1 - eps)
-  pop$e0_N <- pmin(pmax(pop$e0_N, eps), 1 - eps)
+  # Trim propensity scores to [0.01, 0.99]
+  pop$e1_N <- pmin(pmax(pop$e1_N, 0.02), 0.98)
+  
+  # Recompute complement after trimming
+  pop$e0_N <- 1 - pop$e1_N
   
   # ----------------------------------------------------------
   # 3. CSAE estimators within each area/group j
@@ -575,55 +576,55 @@ p_model <- test_model$propensity_model
 
 
 ## Plot results
-library(dplyr)
-library(ggplot2)
-
-plot_data <- bind_rows(
-  `CSAE-OR`   = hte_OR_ida,
-  `CSAE-NIPW` = hte_NIPW_ida,
-  `CSAE-AIPW` = hte_AIPW_ida,
-  .id = "Method"
-) %>%
-  group_by(Method) %>%
-  mutate(estimate = row_number()) %>%
-  ungroup()
-
-# Remove outliers
-plot_data <- plot_data %>%
-  filter(tau > -2)
-
-p <- ggplot(plot_data,
-       aes(x = estimate, y = tau, colour = Method)) +
-  geom_point(
-    position = position_dodge(width = 0.25),
-    size = 3
-  ) +
-  scale_x_continuous(
-    breaks = 1:n_distinct(plot_data$estimate),
-    labels = 1:n_distinct(plot_data$estimate)
-  ) +
-  geom_hline(
-    yintercept = 0,
-    linetype = "dotted",
-    colour = "black"
-  ) +
-  labs(
-    x = NULL,
-    y = "ATE",
-    colour = "Method"
-  ) +
-  theme_classic() +
-  theme(
-    legend.position = "right",
-    axis.text.x = element_text(size = 11),
-    axis.text.y = element_text(size = 11)
-  )
-
-ggsave(p, 
-       filename = "./plots/causal_ATE_plot_package.png")
-
-
-library(tidyverse)
+# library(dplyr)
+# library(ggplot2)
+# 
+# plot_data <- bind_rows(
+#   `CSAE-OR`   = hte_OR_ida,
+#   `CSAE-NIPW` = hte_NIPW_ida,
+#   `CSAE-AIPW` = hte_AIPW_ida,
+#   .id = "Method"
+# ) %>%
+#   group_by(Method) %>%
+#   mutate(estimate = row_number()) %>%
+#   ungroup()
+# 
+# # Remove outliers
+# plot_data <- plot_data %>%
+#   filter(tau > -2)
+# 
+# p <- ggplot(plot_data,
+#        aes(x = estimate, y = tau, colour = Method)) +
+#   geom_point(
+#     position = position_dodge(width = 0.25),
+#     size = 3
+#   ) +
+#   scale_x_continuous(
+#     breaks = 1:n_distinct(plot_data$estimate),
+#     labels = 1:n_distinct(plot_data$estimate)
+#   ) +
+#   geom_hline(
+#     yintercept = 0,
+#     linetype = "dotted",
+#     colour = "black"
+#   ) +
+#   labs(
+#     x = NULL,
+#     y = "ATE",
+#     colour = "Method"
+#   ) +
+#   theme_classic() +
+#   theme(
+#     legend.position = "right",
+#     axis.text.x = element_text(size = 11),
+#     axis.text.y = element_text(size = 11)
+#   )
+# 
+# ggsave(p, 
+#        filename = "./plots/causal_ATE_plot_package.png")
+# 
+# 
+# library(tidyverse)
 
 ## MAP THE MANUAL CODE VERSION 
 
